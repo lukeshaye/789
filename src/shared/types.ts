@@ -10,9 +10,6 @@ export const ClientSchema = z.object({
   user_id: z.string(),
   name: z.string().min(1, "Nome do cliente é obrigatório"),
   phone: z.string().optional().nullable(),
-  // CORREÇÃO APLICADA AQUI:
-  // .or(z.literal("")) permite que o campo seja uma string vazia.
-  // .optional().nullable() garante que ele também pode ser nulo ou ausente.
   email: z.string().email({ message: "Email inválido" }).or(z.literal("")).optional().nullable(),
   notes: z.string().optional().nullable(),
 });
@@ -20,7 +17,7 @@ export const CreateClientSchema = ClientSchema.omit({ id: true, user_id: true })
 
 
 // =================================================================
-// --- Schemas de Profissionais (COM CAMPO DE COR) ---
+// --- Schemas de Profissionais ---
 // =================================================================
 export const ProfessionalSchema = z.object({
   id: z.number().optional(),
@@ -32,7 +29,7 @@ export const CreateProfessionalSchema = ProfessionalSchema.omit({ id: true, user
 
 
 // =================================================================
-// --- Schemas de Serviços (COM CAMPO DE COR) ---
+// --- Schemas de Serviços ---
 // =================================================================
 export const ServiceSchema = z.object({
   id: z.number().optional(),
@@ -63,9 +60,8 @@ export const CreateProductSchema = ProductSchema.omit({ id: true, user_id: true 
 });
 
 // =================================================================
-// --- Schemas de Agendamentos (Atualizado com z.date) ---
+// --- Schemas de Agendamentos ---
 // =================================================================
-// Este schema é para o tipo completo, usado na aplicação
 export const AppointmentSchema = z.object({
   id: z.number().optional(),
   user_id: z.string(),
@@ -75,12 +71,11 @@ export const AppointmentSchema = z.object({
   client_name: z.string(),
   service: z.string(),
   price: z.number(),
-  appointment_date: z.string(), // Mantém como string aqui pois vem do DB
-  end_date: z.string(),         // Mantém como string aqui pois vem do DB
+  appointment_date: z.string(),
+  end_date: z.string(),
   attended: z.boolean().default(false),
 });
 
-// ✅ ESTE É O SCHEMA CORRIGIDO PARA O FORMULÁRIO
 export const AppointmentFormSchema = z.object({
   client_id: z.number({ required_error: "Cliente é obrigatório." }).min(1, "Cliente é obrigatório."),
   professional_id: z.number({ required_error: "Profissional é obrigatório." }).min(1, "Profissional é obrigatório."),
@@ -96,7 +91,7 @@ export const AppointmentFormSchema = z.object({
 
 
 // =================================================================
-// --- Schemas de Entradas Financeiras ---
+// --- Schemas de Entradas Financeiras (COM A CORREÇÃO) ---
 // =================================================================
 export const FinancialEntrySchema = z.object({
   id: z.number().optional(),
@@ -105,7 +100,8 @@ export const FinancialEntrySchema = z.object({
   amount: z.number().positive("O valor deve ser positivo"),
   type: z.enum(["receita", "despesa"]),
   entry_type: z.enum(["pontual", "fixa"]),
-  entry_date: z.string(),
+  // LINHA CORRIGIDA ABAIXO:
+  entry_date: z.date({ required_error: "A data é obrigatória." }), // Alterado de z.string() para z.date()
   appointment_id: z.number().optional().nullable(),
   is_virtual: z.boolean().default(false),
 });
