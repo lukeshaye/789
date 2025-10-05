@@ -67,7 +67,6 @@ const frequencyOptions = [
   { label: 'Fixa', value: 'fixa' },
 ];
 
-// NOVO: Opções para os dropdowns de filtro
 const typeFilterOptions = [
   { label: 'Todos os Tipos', value: 'all' },
   { label: 'Receitas', value: 'receita' },
@@ -108,7 +107,7 @@ export default function Financial() {
   });
 
   const {
-    control, // Usar 'control' para o Controller
+    control,
     handleSubmit,
     reset,
     formState: { errors, isSubmitting },
@@ -120,52 +119,65 @@ export default function Financial() {
   // --- Funções de Busca de Dados ---
   const fetchEntries = useCallback(async (date: Date) => {
     if (!user) return [];
-    const startOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
-    const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+    const startOfMonth = moment(date).startOf('month').format('YYYY-MM-DD');
+    const endOfMonth = moment(date).endOf('month').format('YYYY-MM-DD');
 
-    const { data, error } = await supabase
+    const { data: pontualData, error: pontualError } = await supabase
       .from('financial_entries')
       .select('*')
       .eq('user_id', user.id)
-      .gte('entry_date', startOfMonth.toISOString().split('T')[0])
-      .lte('entry_date', endOfMonth.toISOString().split('T')[0])
-      .order('entry_date', { ascending: false });
+      .eq('entry_type', 'pontual')
+      .gte('entry_date', startOfMonth)
+      .lte('entry_date', endOfMonth);
 
-    if (error) throw error;
-    return data || [];
+    if (pontualError) throw pontualError;
+
+    const { data: fixaData, error: fixaError } = await supabase
+      .from('financial_entries')
+      .select('*')
+      .eq('user_id', user.id)
+      .eq('entry_type', 'fixa')
+      .lte('entry_date', endOfMonth);
+    
+    if (fixaError) throw fixaError;
+
+    return [...(pontualData || []), ...(fixaData || [])];
   }, [user]);
 
-  const fetchKPIs = useCallback(async (date: Date) => {
-    if (!user) return { monthlyRevenue: 0, monthlyExpenses: 0 };
-    const startOfMonth = new Date(date.getFullYear(), date.getMonth(), 1);
-    const endOfMonth = new Date(date.getFullYear(), date.getMonth() + 1, 0);
+  const calculateKPIs = useCallback((entriesForKpi: FinancialEntryType[], date: Date) => {
+    const currentMonth = moment(date);
+    
+    const kpisResult = entriesForKpi.reduce((acc, entry) => {
+        const entryDate = moment(entry.entry_date);
+        
+        const shouldInclude = 
+            (entry.entry_type === 'pontual' && entryDate.isSame(currentMonth, 'month')) ||
+            (entry.entry_type === 'fixa' && entryDate.isSameOrBefore(currentMonth, 'month'));
 
-    const { data: monthlyEntries, error } = await supabase
-      .from('financial_entries')
-      .select('amount, type')
-      .eq('user_id', user.id)
-      .gte('entry_date', startOfMonth.toISOString().split('T')[0])
-      .lte('entry_date', endOfMonth.toISOString().split('T')[0]);
-
-    if (error) throw error;
-
-    const kpisResult = (monthlyEntries || []).reduce((acc: { monthlyRevenue: number; monthlyExpenses: number }, entry: { amount: number; type: string }) => {
-        if (entry.type === 'receita') acc.monthlyRevenue += entry.amount;
-        else if (entry.type === 'despesa') acc.monthlyExpenses += entry.amount;
+        if (shouldInclude) {
+            if (entry.type === 'receita') {
+                acc.monthlyRevenue += entry.amount;
+            } else if (entry.type === 'despesa') {
+                acc.monthlyExpenses += entry.amount;
+            }
+        }
         return acc;
-      }, { monthlyRevenue: 0, monthlyExpenses: 0 });
+    }, { monthlyRevenue: 0, monthlyExpenses: 0 });
 
     return kpisResult;
-  }, [user]);
+  }, []);
 
   const fetchEntriesAndKPIs = useCallback(async (date: Date) => {
     if (!user) return;
     setLoading(true);
     setError(null);
     try {
-      const [entriesData, kpisData] = await Promise.all([fetchEntries(date), fetchKPIs(date)]);
-      if (entriesData) setEntries(entriesData);
-      if (kpisData) setKpis({ ...kpisData, netProfit: kpisData.monthlyRevenue - kpisData.monthlyExpenses });
+      const allEntries = await fetchEntries(date);
+      const kpisData = calculateKPIs(allEntries, date);
+      
+      setEntries(allEntries);
+      setKpis({ ...kpisData, netProfit: kpisData.monthlyRevenue - kpisData.monthlyExpenses });
+
     } catch (err: any) {
       setError("Falha ao carregar dados financeiros. Tente novamente mais tarde.");
       showError("Erro ao carregar dados", err.message);
@@ -173,7 +185,8 @@ export default function Financial() {
     } finally {
       setLoading(false);
     }
-  }, [user, fetchEntries, fetchKPIs, showError]);
+  }, [user, fetchEntries, calculateKPIs, showError]);
+
 
   useEffect(() => {
     if (user) {
@@ -182,10 +195,18 @@ export default function Financial() {
   }, [user, currentDate, fetchEntriesAndKPIs]);
 
   const filteredEntries = useMemo(() => {
+    const currentMonth = moment(currentDate);
     return entries
+      .filter(entry => {
+        const entryDate = moment(entry.entry_date);
+        const isPontualDoMes = entry.entry_type === 'pontual' && entryDate.isSame(currentMonth, 'month');
+        const isFixaRecorrente = entry.entry_type === 'fixa' && entryDate.isSameOrBefore(currentMonth, 'month');
+        return isPontualDoMes || isFixaRecorrente;
+      })
       .filter(entry => typeFilter === 'all' || entry.type === typeFilter)
-      .filter(entry => frequencyFilter === 'all' || entry.entry_type === frequencyFilter);
-  }, [entries, typeFilter, frequencyFilter]);
+      .filter(entry => frequencyFilter === 'all' || entry.entry_type === frequencyFilter)
+      .sort((a, b) => new Date(b.entry_date).getTime() - new Date(a.entry_date).getTime());
+  }, [entries, typeFilter, frequencyFilter, currentDate]);
 
 
   // --- Manipuladores de Eventos ---
@@ -199,7 +220,7 @@ export default function Financial() {
     const entryData = { 
         ...formData, 
         amount: Math.round(formData.amount * 100),
-        entry_date: moment(formData.entry_date).format('YYYY-MM-DD') // Formata a data
+        entry_date: moment(formData.entry_date).format('YYYY-MM-DD')
     };
 
     try {
@@ -245,7 +266,7 @@ export default function Financial() {
     reset({ 
         ...entry, 
         amount: entry.amount / 100, 
-        entry_date: new Date(entry.entry_date + 'T00:00:00') // Converte para objeto Date
+        entry_date: new Date(entry.entry_date + 'T00:00:00')
     });
     setIsModalOpen(true);
   };
@@ -331,7 +352,6 @@ export default function Financial() {
   return (
     <Layout>
       <div className="px-4 sm:px-6 lg:px-8 pb-24 lg:pb-8">
-        {/* Cabeçalho e KPIs */}
         <div className="sm:flex sm:items-center sm:justify-between">
           <div className="sm:flex-auto">
             <h1 className="text-3xl font-bold text-gray-900">Financeiro</h1>
@@ -358,26 +378,19 @@ export default function Financial() {
             <div className="bg-white overflow-hidden shadow-sm rounded-lg border border-gray-200 p-5"><div className="flex items-center"><div className="flex-shrink-0"><div className="bg-blue-100 rounded-md p-3"><DollarSign className="h-6 w-6 text-blue-600" /></div></div><div className="ml-5 w-0 flex-1"><dl><dt className="text-sm font-medium text-gray-500 truncate">Lucro Líquido</dt><dd className="text-lg font-semibold text-gray-900">{formatCurrency(kpis.netProfit)}</dd></dl></div></div></div>
         </div>
 
-        {/* ======================================================= */}
-        {/* --- INÍCIO DA SEÇÃO CORRIGIDA --- */}
-        {/* ======================================================= */}
         <div className="mt-8">
             <div className="bg-white shadow-sm rounded-lg border border-gray-200">
                 <div className="px-4 sm:px-6 py-4 border-b border-gray-200">
-                  {/* Container principal com Flexbox para melhor responsividade */}
                   <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
                     
-                    {/* Lado Esquerdo: Título */}
                     <div>
                       <h3 className="text-lg font-medium text-gray-900 whitespace-nowrap">
                         Lançamentos do Mês
                       </h3>
                     </div>
                     
-                    {/* Lado Direito: Controles (Navegação de Mês + Filtros) */}
                     <div className="flex flex-col sm:flex-row sm:items-center sm:justify-end gap-4 flex-wrap">
                       
-                      {/* Navegação de Mês */}
                       <div className="flex items-center justify-center">
                         <button onClick={handlePreviousMonth} className="p-2 rounded-full hover:bg-gray-100 transition-colors flex-shrink-0">
                           <ChevronLeft className="h-5 w-5 text-gray-600" />
@@ -391,7 +404,6 @@ export default function Financial() {
                         </button>
                       </div>
 
-                      {/* Filtros */}
                       <div className="flex items-center gap-4 w-full sm:w-auto">
                         <Dropdown
                           value={typeFilter}
@@ -409,15 +421,11 @@ export default function Financial() {
                     </div>
                   </div>
                 </div>
-        {/* ======================================================= */}
-        {/* --- FIM DA SEÇÃO CORRIGIDA --- */}
-        {/* ======================================================= */}
 
                 {filteredEntries.length === 0 ? (
                     <div className="text-center py-12"><CalendarIcon className="mx-auto h-12 w-12 text-gray-400" /><h3 className="mt-2 text-sm font-medium text-gray-900">Nenhuma entrada encontrada</h3><p className="mt-1 text-sm text-gray-500">Não há lançamentos para os filtros selecionados neste mês.</p></div>
                 ) : (
                     <>
-                        {/* Visualização de Cards para Mobile */}
                         <div className="lg:hidden p-4 space-y-3">
                             {filteredEntries.map((entry) => (
                                 <div key={entry.id} className="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
@@ -439,7 +447,6 @@ export default function Financial() {
                                 </div>
                             ))}
                         </div>
-                        {/* Visualização de Tabela para Desktop */}
                         <div className="hidden lg:block overflow-x-auto">
                             <table className="min-w-full divide-y divide-gray-200">
                                 <thead className="bg-gray-50"><tr><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Data</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Descrição</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tipo</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Frequência</th><th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Valor</th><th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Ações</th></tr></thead>
@@ -463,7 +470,7 @@ export default function Financial() {
         </div>
       </div>
       
-      {/* Menu FAB */}
+      {/* Menu FAB Corrigido */}
       <div className="lg:hidden fixed bottom-6 right-6 z-40">
         {isFabMenuOpen && (
           <div 
@@ -472,17 +479,9 @@ export default function Financial() {
             aria-hidden="true"
           ></div>
         )}
-        <div className="relative flex flex-col-reverse items-end gap-y-3">
-            <button 
-                onClick={() => setIsFabMenuOpen(!isFabMenuOpen)} 
-                className="relative z-10 bg-gradient-to-r from-pink-500 to-violet-500 text-white rounded-full p-4 shadow-lg hover:scale-110 active:scale-100 transition-all duration-300"
-                aria-label={isFabMenuOpen ? "Fechar menu de ações" : "Abrir menu de ações"}
-                aria-expanded={isFabMenuOpen}
-            >
-                <Plus className={`w-6 h-6 transition-transform duration-300 ${isFabMenuOpen ? 'rotate-45' : ''}`} />
-            </button>
+        <div className="relative flex flex-col items-end">
             <div 
-                className={`flex flex-col items-end gap-y-3 transition-all duration-300 ease-in-out ${
+                className={`flex flex-col items-end gap-y-3 transition-all duration-300 ease-in-out absolute bottom-full right-0 mb-4 ${
                     isFabMenuOpen ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-4 pointer-events-none'
                 }`}
             >
@@ -523,6 +522,14 @@ export default function Financial() {
                     </button>
                 </div>
             </div>
+            <button 
+                onClick={() => setIsFabMenuOpen(!isFabMenuOpen)} 
+                className="relative z-10 bg-gradient-to-r from-pink-500 to-violet-500 text-white rounded-full p-4 shadow-lg hover:scale-110 active:scale-100 transition-all duration-300"
+                aria-label={isFabMenuOpen ? "Fechar menu de ações" : "Abrir menu de ações"}
+                aria-expanded={isFabMenuOpen}
+            >
+                <Plus className={`w-6 h-6 transition-transform duration-300 ${isFabMenuOpen ? 'rotate-45' : ''}`} />
+            </button>
         </div>
       </div>
 
@@ -546,7 +553,6 @@ export default function Financial() {
                   )}
                   <div className="space-y-4">
                     
-                    {/* Campo Descrição */}
                     <div>
                       <label htmlFor="description" className="block text-sm font-medium text-gray-700 mb-1">Descrição *</label>
                       <Controller
@@ -560,7 +566,6 @@ export default function Financial() {
                       {errors.description && <p className="mt-1 text-sm text-red-600">{errors.description.message}</p>}
                     </div>
                     
-                    {/* Campo Valor */}
                     <div>
                       <label htmlFor="amount" className="block text-sm font-medium text-gray-700 mb-1">Valor (R$) *</label>
                       <Controller
@@ -585,7 +590,6 @@ export default function Financial() {
                       {errors.amount && <p className="mt-1 text-sm text-red-600">{errors.amount.message}</p>}
                     </div>
                     
-                    {/* Campo Tipo */}
                     <div>
                       <label htmlFor="type" className="block text-sm font-medium text-gray-700 mb-1">Tipo *</label>
                       <Controller
@@ -605,7 +609,6 @@ export default function Financial() {
                        {errors.type && <p className="mt-1 text-sm text-red-600">{errors.type.message}</p>}
                     </div>
 
-                    {/* Campo Frequência */}
                     <div>
                       <label htmlFor="entry_type" className="block text-sm font-medium text-gray-700 mb-1">Frequência *</label>
                        <Controller
@@ -625,7 +628,6 @@ export default function Financial() {
                       {errors.entry_type && <p className="mt-1 text-sm text-red-600">{errors.entry_type.message}</p>}
                     </div>
 
-                    {/* Campo Data */}
                     <div>
                       <label htmlFor="entry_date" className="block text-sm font-medium text-gray-700 mb-1">Data *</label>
                       <Controller
@@ -662,7 +664,6 @@ export default function Financial() {
         </div>
       )}
 
-      {/* Modal de Confirmação de Exclusão */}
       <ConfirmationModal isOpen={isConfirmModalOpen} onClose={() => setIsConfirmModalOpen(false)} onConfirm={handleDeleteConfirm} title="Excluir Entrada Financeira" message={`Tem certeza que deseja excluir a entrada "${entryToDelete?.description}"? Esta ação não pode ser desfeita.`} confirmText="Excluir" cancelText="Cancelar" variant="danger" isLoading={isDeleting} />
     </Layout>
   );
